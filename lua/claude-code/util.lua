@@ -255,17 +255,28 @@ function M.parse_http_headers(request)
 end
 
 --- Apply XOR mask to data (WebSocket frame unmasking)
+--- Optimized: collects raw byte values and converts via string.char in chunks,
+--- avoiding per-byte string allocations while respecting Lua's unpack stack limit.
 --- @param data string
 --- @param mask string 4-byte mask key
 --- @return string
 function M.apply_mask(data, mask)
-  local bytes = { data:byte(1, #data) }
-  local mask_bytes = { mask:byte(1, 4) }
+  local len = #data
+  local bytes = { data:byte(1, len) }
+  local m1, m2, m3, m4 = mask:byte(1, 4)
+  local mask_bytes = { m1, m2, m3, m4 }
   local result = {}
-  for i = 1, #bytes do
-    result[i] = string.char(bxor(bytes[i], mask_bytes[((i - 1) % 4) + 1]))
+  for i = 1, len do
+    result[i] = bxor(bytes[i], mask_bytes[((i - 1) % 4) + 1])
   end
-  return table.concat(result)
+  -- Convert byte values to string in chunks to avoid unpack stack overflow
+  local CHUNK = 4096
+  local parts = {}
+  for i = 1, len, CHUNK do
+    local j = math.min(i + CHUNK - 1, len)
+    parts[#parts + 1] = string.char(unpack(result, i, j))
+  end
+  return table.concat(parts)
 end
 
 return M

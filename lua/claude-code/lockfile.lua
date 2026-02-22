@@ -10,6 +10,27 @@ local function get_lock_dir()
   return config_dir .. "/ide"
 end
 
+--- Collect workspace folders (cwd + LSP workspace folders, deduplicated)
+--- @return string[]
+local function collect_workspace_folders()
+  local cwd = vim.fn.getcwd()
+  local folders = { cwd }
+  local seen = { [cwd] = true }
+
+  -- Try to add LSP workspace folders if available
+  local ok, lsp_folders = pcall(vim.lsp.buf.list_workspace_folders)
+  if ok and lsp_folders and #lsp_folders > 0 then
+    for _, folder_path in ipairs(lsp_folders) do
+      if not seen[folder_path] then
+        seen[folder_path] = true
+        folders[#folders + 1] = folder_path
+      end
+    end
+  end
+
+  return folders
+end
+
 --- Create the lock file for the given port
 --- @param port number
 --- @param auth_token string
@@ -33,7 +54,7 @@ function M.create(port, auth_token)
   local lock_path = lock_dir .. "/" .. port .. ".lock"
   local data = vim.json.encode({
     pid = vim.fn.getpid(),
-    workspaceFolders = { vim.fn.getcwd() },
+    workspaceFolders = collect_workspace_folders(),
     ideName = "Neovim",
     transport = "ws",
     useWebSocket = true,

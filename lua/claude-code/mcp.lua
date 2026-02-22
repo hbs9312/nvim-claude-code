@@ -1,4 +1,5 @@
 local util = require("claude-code.util")
+local tools = require("claude-code.tools")
 
 local M = {}
 
@@ -11,6 +12,34 @@ local handlers = {}
 function M.register_handler(method, handler)
   handlers[method] = handler
   util.log_debug("Registered MCP handler: %s", method)
+end
+
+--- @type table<string|number, fun(result: table)> Pending deferred response callbacks
+local deferred = {}
+
+--- Defer the response for a request (for blocking tools like openDiff).
+--- The tool handler should call this and later invoke the callback to send the response.
+--- @param id string|number request id
+--- @param callback fun(send: fun(result: table)) called immediately with a send function
+function M.defer_response(id, callback)
+  -- callback receives a "send" function that must be called exactly once
+  deferred[id] = true
+  callback(function(result)
+    deferred[id] = nil
+    local server = require("claude-code.server")
+    server.send_text(vim.json.encode({
+      jsonrpc = "2.0",
+      id = id,
+      result = result,
+    }))
+  end)
+end
+
+--- Check if a request id has a deferred response pending
+--- @param id string|number
+--- @return boolean
+function M.is_deferred(id)
+  return deferred[id] ~= nil
 end
 
 --- Handle an incoming JSON-RPC 2.0 message
@@ -66,6 +95,11 @@ function M.handle_message(json_string)
     })
   end
 
+  -- nil result means the response is deferred (e.g., blocking tool like openDiff)
+  if result == nil then
+    return nil
+  end
+
   return vim.json.encode({
     jsonrpc = "2.0",
     id = id,
@@ -107,11 +141,41 @@ function M.register_defaults()
     util.log_info("MCP initialized notification received")
   end)
 
-  -- tools/list
+  -- tools/list — return all registered tools from the tool registry
   M.register_handler("tools/list", function(_params, _id)
     return {
-      tools = {},
+      tools = tools.list(),
     }
+  end)
+
+  -- tools/call — dispatch to the tool registry
+  -- Returns result synchronously, or nil if the tool defers its response.
+  M.register_handler("tools/call", function(params, id)
+    local name = params.name
+    local arguments = params.arguments or {}
+
+    if not tools.has(name) then
+      return {
+        content = { { type = "text", text = "Unknown tool: " .. tostring(name) } },
+        isError = true,
+      }
+    end
+
+    local ok, result = pcall(tools.call, name, arguments, id)
+    if not ok then
+      util.log_error("Tool call error (%s): %s", name, tostring(result))
+      return {
+        content = { { type = "text", text = "Tool error: " .. tostring(result) } },
+        isError = true,
+      }
+    end
+
+    -- nil result means the tool has deferred its response (e.g., openDiff waiting for accept/reject)
+    if result == nil then
+      return nil
+    end
+
+    return result
   end)
 
   -- notifications/cancelled

@@ -27,6 +27,14 @@ function M.start()
   -- Register default MCP handlers
   mcp.register_defaults()
 
+  -- Register tools
+  require("claude-code.tools.open_file")
+  require("claude-code.tools.open_diff")
+  require("claude-code.tools.diagnostics")
+  require("claude-code.tools.selection").setup()
+  require("claude-code.tools.editors")
+  require("claude-code.tools.documents")
+
   local port = server.start(config.values, auth_token)
   if not port then
     util.log_error("Failed to start server")
@@ -34,11 +42,31 @@ function M.start()
   end
 
   lockfile.create(port, auth_token)
+
+  -- Setup diagnostics notifications
+  require("claude-code.notifications").setup_diagnostics()
+
   util.log_info("Claude Code server ready on port %d", port)
+
+  -- Emit user event
+  pcall(vim.api.nvim_exec_autocmds, "User", {
+    pattern = "ClaudeCodeServerStarted",
+    data = { port = port },
+  })
 end
 
 --- Stop the server and clean up
 function M.stop()
+  -- Close all active diff sessions (reject them)
+  local diff = require("claude-code.diff")
+  diff.close_all()
+
+  -- Teardown selection tracking
+  require("claude-code.tools.selection").teardown()
+
+  -- Teardown diagnostics notifications
+  require("claude-code.notifications").teardown_diagnostics()
+
   local port = server.get_port()
   if port then
     lockfile.remove(port)
@@ -46,6 +74,12 @@ function M.stop()
   server.stop()
   auth_token = nil
   util.log_info("Claude Code server stopped")
+
+  -- Emit user event
+  pcall(vim.api.nvim_exec_autocmds, "User", {
+    pattern = "ClaudeCodeServerStopped",
+    data = {},
+  })
 end
 
 --- Check if the server is running
@@ -58,6 +92,47 @@ end
 --- @return number|nil
 function M.get_port()
   return server.get_port()
+end
+
+--- Statusline component: returns a string indicating Claude Code connection state
+--- @return string
+function M.statusline()
+  if not server.is_running() then
+    return ""
+  end
+  if server.is_client_connected() then
+    return "Claude"
+  end
+  return "Claude (waiting)"
+end
+
+--- Check if a Claude Code client is connected
+--- @return boolean
+function M.is_connected()
+  return server.is_client_connected()
+end
+
+--- Restart the server (stop + start)
+function M.restart()
+  M.stop()
+  vim.defer_fn(function()
+    M.start()
+    local port = server.get_port()
+    if port then
+      vim.notify(
+        string.format("[claude-code] Server restarted on port %d", port),
+        vim.log.levels.INFO
+      )
+    end
+  end, 100)
+end
+
+--- Send at_mention notification for current file or specified range
+--- @param filepath string|nil File path (defaults to current buffer)
+--- @param startline number|nil 0-indexed start line
+--- @param endline number|nil 0-indexed end line
+function M.at_mention(filepath, startline, endline)
+  require("claude-code.notifications").at_mention(nil, filepath, startline, endline)
 end
 
 --- Parse mode and remaining args from command arguments
@@ -197,17 +272,25 @@ end
 --- Show connection status
 function M.status()
   if not server.is_running() then
-    print("[claude-code] Server not running")
+    vim.notify("Claude Code MCP Server\n  Status:     stopped", vim.log.levels.INFO)
     return
   end
 
   local port = server.get_port()
   local connected = server.is_client_connected()
-  print(string.format(
-    "[claude-code] Server: port %d | Client: %s",
-    port or 0,
-    connected and "connected" or "not connected"
-  ))
+  local tools = require("claude-code.tools")
+
+  local lines = {
+    "Claude Code MCP Server",
+    "  Status:     running",
+    "  Port:       " .. (port or 0),
+    "  Auth:       configured",
+    "  Client:     " .. (connected and "connected" or "not connected"),
+    "  Uptime:     " .. server.get_uptime_str(),
+    "  Tools:      " .. tools.count() .. " registered",
+  }
+
+  vim.notify(table.concat(lines, "\n"), vim.log.levels.INFO)
 end
 
 --- Setup the plugin
@@ -236,6 +319,14 @@ function M.setup(opts)
   vim.api.nvim_create_user_command("ClaudeCodeStop", function()
     M.stop()
   end, { desc = "Stop Claude Code server" })
+
+  vim.api.nvim_create_user_command("ClaudeCodeRestart", function()
+    M.restart()
+  end, { desc = "Restart Claude Code server" })
+
+  vim.api.nvim_create_user_command("ClaudeAtMention", function(cmd_opts)
+    require("claude-code.notifications").at_mention(cmd_opts)
+  end, { range = true, desc = "Send current file/selection to Claude as @mention" })
 
   -- Cleanup on exit
   augroup = vim.api.nvim_create_augroup("ClaudeCode", { clear = true })

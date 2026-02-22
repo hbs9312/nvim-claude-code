@@ -15,6 +15,7 @@ local M = {}
 --- @field handshake_done boolean
 --- @field ping_timer userdata|nil
 --- @field config table|nil
+--- @field start_time number|nil
 
 --- @type ServerState
 local state = {
@@ -26,6 +27,7 @@ local state = {
   handshake_done = false,
   ping_timer = nil,
   config = nil,
+  start_time = nil,
 }
 
 --- Send data to the connected client
@@ -67,10 +69,24 @@ local function close_client(code, reason)
     end)
   end
 
+  local was_connected = state.handshake_done
+
   state.client = nil
   state.client_buf = ""
   state.handshake_done = false
   util.log_info("Client disconnected")
+
+  -- Emit user event if the client had completed handshake
+  if was_connected then
+    vim.schedule(function()
+      pcall(vim.api.nvim_exec_autocmds, "User", {
+        pattern = "ClaudeCodeClientDisconnected",
+        data = {},
+      })
+      -- Refresh statusline
+      pcall(vim.cmd, "redrawstatus")
+    end)
+  end
 end
 
 --- Process received data in WebSocket mode (after handshake)
@@ -137,6 +153,16 @@ local function process_http_data(data)
 
   state.handshake_done = true
   util.log_info("WebSocket handshake completed")
+
+  -- Emit user event for client connection
+  vim.schedule(function()
+    pcall(vim.api.nvim_exec_autocmds, "User", {
+      pattern = "ClaudeCodeClientConnected",
+      data = {},
+    })
+    -- Refresh statusline
+    pcall(vim.cmd, "redrawstatus")
+  end)
 end
 
 --- Handle incoming data from a client
@@ -250,6 +276,7 @@ function M.start(config, auth_token)
 
   state.tcp_server = server
   state.port = port
+  state.start_time = os.time()
 
   start_ping_timer()
 
@@ -277,6 +304,7 @@ function M.stop()
 
   state.port = nil
   state.auth_token = nil
+  state.start_time = nil
 end
 
 --- Check if server is running
@@ -301,6 +329,24 @@ end
 function M.disconnect_client()
   if state.client then
     close_client(1000, "Disconnected by user")
+  end
+end
+
+--- Get formatted uptime string
+--- @return string
+function M.get_uptime_str()
+  if not state.start_time then
+    return "n/a"
+  end
+  local elapsed = os.time() - state.start_time
+  if elapsed < 60 then
+    return string.format("%ds", elapsed)
+  elseif elapsed < 3600 then
+    return string.format("%dm %ds", math.floor(elapsed / 60), elapsed % 60)
+  else
+    local hours = math.floor(elapsed / 3600)
+    local mins = math.floor((elapsed % 3600) / 60)
+    return string.format("%dh %dm", hours, mins)
   end
 end
 

@@ -14,6 +14,16 @@ M.defaults = {
     split_side = "right",
     split_width_percentage = 0.4,
   },
+  diagnostics = {
+    enabled = true, -- send diagnostics_changed notifications
+  },
+  diff = {
+    auto_close = true,
+    keymaps = {
+      accept = { "<CR>", "ga" },
+      reject = { "q", "gx" },
+    },
+  },
 }
 
 --- @type table
