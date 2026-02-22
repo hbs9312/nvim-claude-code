@@ -19,6 +19,7 @@ M.defaults = {
   },
   diff = {
     auto_close = true,
+    feedback_delay = 800, -- ms, 0 to close immediately
     keymaps = {
       accept = { "<CR>", "ga" },
       reject = { "q", "gx" },
