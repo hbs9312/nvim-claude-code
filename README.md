@@ -186,6 +186,32 @@ The plugin exposes these tools to Claude CLI via MCP:
 - **getOpenEditors** — List all open editor buffers
 - **getDiagnostics** — Get LSP diagnostics for files
 
+## Integrations
+
+### Neo-tree
+
+Send files from [Neo-tree](https://github.com/nvim-neo-tree/neo-tree.nvim) to Claude CLI as @mentions:
+
+```lua
+require("neo-tree").setup({
+  window = {
+    mappings = {
+      ["@"] = {
+        function(state)
+          local node = state.tree:get_node()
+          if node.type == "file" then
+            require("claude-code").at_mention(node:get_id())
+          end
+        end,
+        desc = "Send to Claude CLI",
+      },
+    },
+  },
+})
+```
+
+Navigate to any file in Neo-tree and press `@` to send it as a file reference to the active Claude CLI session.
+
 ## FAQ
 
 **Q: Claude CLI doesn't connect?**

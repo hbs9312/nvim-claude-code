@@ -244,6 +244,7 @@ local function do_open_vsplit(args)
     end,
   })
   term_bufnr = vim.api.nvim_get_current_buf()
+  vim.api.nvim_buf_set_name(term_bufnr, "Claude Code")
   vim.cmd("startinsert")
 end
 
@@ -386,3 +387,4 @@ function M.setup(opts)
 end
 
 return M
+
