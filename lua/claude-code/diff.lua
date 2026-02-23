@@ -27,9 +27,9 @@ local cleaning_up = false
 --- @field new_file_path string target file path for writing
 --- @field new_file_contents string proposed file contents
 --- @field tab_name string display name for the diff
---- @field diff_tab number|nil tabpage handle for the diff tab
+--- @field bar_buf number|nil button bar buffer handle
+--- @field bar_win number|nil button bar window handle
 --- @field augroup number|nil autocmd group id
---- @field saved_layout table|nil { win: number, buf: number, tab: number }
 --- @field resolved boolean whether accept/reject has been called
 --- @field send_response fun(result: table)|nil callback to send deferred MCP response
 
@@ -84,6 +84,9 @@ local function setup_highlights()
   hi("ClaudeCodeDiffHintDim", { link = "NonText" })
   hi("ClaudeCodeDiffAccepted", { fg = "#50fa7b", bg = "#1a3a1a" })
   hi("ClaudeCodeDiffRejected", { fg = "#ff5555", bg = "#3a1a1a" })
+  hi("ClaudeCodeDiffBtnAccept", { fg = "#1a1a2e", bg = "#50fa7b", bold = true })
+  hi("ClaudeCodeDiffBtnReject", { fg = "#1a1a2e", bg = "#ff5555", bold = true })
+  hi("ClaudeCodeDiffBtnBar", { bg = "#2a2a3e" })
 end
 
 --------------------------------------------------------------------------------
@@ -151,7 +154,7 @@ local function remove_keymaps(session)
   if type(accept_keys) == "string" then accept_keys = { accept_keys } end
   if type(reject_keys) == "string" then reject_keys = { reject_keys } end
 
-  for _, buf in ipairs({ session.old_buf, session.new_buf }) do
+  for _, buf in ipairs({ session.old_buf, session.new_buf, session.bar_buf }) do
     if buf and vim.api.nvim_buf_is_valid(buf) then
       for _, key in ipairs(accept_keys) do
         pcall(vim.keymap.del, "n", key, { buffer = buf })
@@ -180,6 +183,19 @@ local function show_feedback(session, action)
     if win and vim.api.nvim_win_is_valid(win) then
       vim.wo[win].winbar = feedback_winbar
     end
+  end
+
+  -- Update button bar
+  if session.bar_buf and vim.api.nvim_buf_is_valid(session.bar_buf) then
+    local hl_group = action == "accept" and "ClaudeCodeDiffAccepted" or "ClaudeCodeDiffRejected"
+    local icon = action == "accept" and "✓" or "✗"
+    local label = action == "accept" and "Accepted" or "Rejected"
+    local bar_text = string.format("  %s %s: %s  ", icon, label, filename)
+    vim.bo[session.bar_buf].modifiable = true
+    vim.api.nvim_buf_set_lines(session.bar_buf, 0, -1, false, { bar_text })
+    vim.api.nvim_buf_clear_namespace(session.bar_buf, -1, 0, -1)
+    vim.api.nvim_buf_add_highlight(session.bar_buf, -1, hl_group, 0, 0, -1)
+    vim.bo[session.bar_buf].modifiable = false
   end
 end
 
@@ -279,6 +295,9 @@ local function setup_keymaps(session)
   if session.new_buf and vim.api.nvim_buf_is_valid(session.new_buf) then
     bufs[#bufs + 1] = session.new_buf
   end
+  if session.bar_buf and vim.api.nvim_buf_is_valid(session.bar_buf) then
+    bufs[#bufs + 1] = session.bar_buf
+  end
 
   local accept_keys = config.values.diff and config.values.diff.keymaps and config.values.diff.keymaps.accept
     or { "<CR>", "ga" }
@@ -310,18 +329,14 @@ end
 -- Autocmds (safety net)
 --------------------------------------------------------------------------------
 
---- Set up autocmds for the diff session (TabClosed as reject safety net)
+--- Set up autocmds for the diff session (WinClosed as reject safety net)
 --- @param session DiffSession
 local function setup_autocmds(session)
   session.augroup = vim.api.nvim_create_augroup("ClaudeDiff_" .. session.id, { clear = true })
 
-  -- Track the diff tab number for TabClosed detection
-  local diff_tab = vim.api.nvim_get_current_tabpage()
-  session.diff_tab = diff_tab
-
   -- Use WinClosed on both diff windows — fires when the user closes a diff window
-  -- (e.g. :q, :close, or closing the tab), but NOT on simple tab switches.
-  for _, win in ipairs({ session.old_win, session.new_win }) do
+  -- (e.g. :q, :close), triggers auto-reject if not yet resolved.
+  for _, win in ipairs({ session.old_win, session.new_win, session.bar_win }) do
     if win and vim.api.nvim_win_is_valid(win) then
       vim.api.nvim_create_autocmd("WinClosed", {
         group = session.augroup,
@@ -343,38 +358,55 @@ end
 -- Layout
 --------------------------------------------------------------------------------
 
---- Create the diff layout: open a new tab, vsplit, diffthis
---- Uses a dedicated tab to avoid interference from existing window layout.
+--- Create the diff layout: two floating windows side by side (80% of editor area)
+--- Uses floating windows to avoid interference with existing window layout.
 --- @param session DiffSession
 local function create_layout(session)
-  -- Save current layout for restoration
-  session.saved_layout = {
-    win = vim.api.nvim_get_current_win(),
-    buf = vim.api.nvim_get_current_buf(),
-    tab = vim.api.nvim_get_current_tabpage(),
+  local editor_width = vim.o.columns
+  local editor_height = vim.o.lines - vim.o.cmdheight - 1 -- subtract cmdline and status
+
+  -- Use 80% of editor area
+  local total_width = math.floor(editor_width * 0.8)
+  local total_height = math.floor(editor_height * 0.8)
+  local bar_height = 1 -- button bar content height (1 line)
+  local bar_border_height = 2 -- top + bottom border
+  local diff_height = total_height - bar_height - bar_border_height
+  local win_width = math.floor((total_width - 1) / 2) -- -1 for separator gap
+  local start_col = math.floor((editor_width - total_width) / 2)
+  local start_row = math.floor((editor_height - total_height) / 2)
+
+  -- Common float options for diff windows
+  local base_opts = {
+    relative = "editor",
+    height = diff_height,
+    width = win_width,
+    row = start_row,
+    style = "minimal",
+    border = "rounded",
   }
 
-  -- Open a new tab to isolate the diff from existing layout
-  vim.cmd("tabnew")
-  local new_win = vim.api.nvim_get_current_win()
-  vim.api.nvim_win_set_buf(new_win, session.new_buf)
-  session.new_win = new_win
-
-  -- Split left for the old (original) buffer
-  vim.cmd("leftabove vsplit")
-  local old_win = vim.api.nvim_get_current_win()
-  vim.api.nvim_win_set_buf(old_win, session.old_buf)
+  -- Left float: old (original)
+  local old_opts = vim.tbl_extend("force", base_opts, { col = start_col })
+  local old_win = vim.api.nvim_open_win(session.old_buf, false, old_opts)
   session.old_win = old_win
+
+  -- Right float: new (proposed)
+  local new_opts = vim.tbl_extend("force", base_opts, { col = start_col + win_width + 1 })
+  local new_win = vim.api.nvim_open_win(session.new_buf, true, new_opts)
+  session.new_win = new_win
 
   -- Apply diffthis on both windows
   vim.api.nvim_win_call(old_win, function() vim.cmd("diffthis") end)
   vim.api.nvim_win_call(new_win, function() vim.cmd("diffthis") end)
 
-  -- Set winbar labels with diff index and colored highlight groups
+  -- Set winbar labels (file info only, no keymap hints)
   local filename = vim.fn.fnamemodify(session.new_file_path, ":t")
   local index_part = string.format("%%#ClaudeCodeDiffIndex#[%d/%d] ", session.diff_index, session.batch_total)
 
-  -- Build keymap hint from config
+  vim.wo[old_win].winbar = "  " .. index_part .. "%#ClaudeCodeDiffOriginal#Original: " .. filename .. "%*"
+  vim.wo[new_win].winbar = "  " .. index_part .. "%#ClaudeCodeDiffProposed#Proposed: " .. filename .. "%*"
+
+  -- Build keymap hint strings for button bar
   local accept_keys = config.values.diff and config.values.diff.keymaps and config.values.diff.keymaps.accept
     or { "<CR>", "ga" }
   local reject_keys = config.values.diff and config.values.diff.keymaps and config.values.diff.keymaps.reject
@@ -383,13 +415,55 @@ local function create_layout(session)
   if type(reject_keys) == "string" then reject_keys = { reject_keys } end
   local accept_hint = table.concat(accept_keys, "/")
   local reject_hint = table.concat(reject_keys, "/")
-  local hint = string.format(
-    "%%#ClaudeCodeDiffAcceptHint#%s: Accept %%#ClaudeCodeDiffHintDim#| %%#ClaudeCodeDiffRejectHint#%s: Reject%%*",
-    accept_hint, reject_hint
-  )
 
-  vim.wo[old_win].winbar = "  " .. index_part .. "%#ClaudeCodeDiffOriginal#Original: " .. filename .. "%*"
-  vim.wo[new_win].winbar = "  " .. index_part .. "%#ClaudeCodeDiffProposed#Proposed: " .. filename .. "%*%= " .. hint .. "  "
+  -- Create button bar buffer
+  local bar_buf = create_scratch_buf("claude-diff://buttons/" .. session.id)
+  session.bar_buf = bar_buf
+
+  -- Build button text:  "     ✓ Accept (Enter/ga)       ✗ Reject (q/gx)     "
+  local accept_text = " ✓ Accept (" .. accept_hint .. ") "
+  local reject_text = " ✗ Reject (" .. reject_hint .. ") "
+  local bar_inner_width = total_width -- inner width of bar (border adds 2 but we use full total_width)
+  local buttons_len = vim.fn.strdisplaywidth(accept_text) + vim.fn.strdisplaywidth(reject_text) + 7 -- 7 for padding between
+  local left_pad = math.max(0, math.floor((bar_inner_width - buttons_len) / 2))
+  local mid_pad = 7
+  local bar_line = string.rep(" ", left_pad) .. accept_text .. string.rep(" ", mid_pad) .. reject_text
+
+  vim.api.nvim_buf_set_lines(bar_buf, 0, -1, false, { bar_line })
+
+  -- Apply highlights to button text
+  local ns = vim.api.nvim_create_namespace("claude_diff_btn")
+  -- Background for entire line
+  vim.api.nvim_buf_add_highlight(bar_buf, ns, "ClaudeCodeDiffBtnBar", 0, 0, -1)
+  -- Accept button highlight
+  local accept_start = left_pad
+  local accept_end = accept_start + #accept_text
+  vim.api.nvim_buf_add_highlight(bar_buf, ns, "ClaudeCodeDiffBtnAccept", 0, accept_start, accept_end)
+  -- Reject button highlight
+  local reject_start = accept_end + mid_pad
+  local reject_end = reject_start + #reject_text
+  vim.api.nvim_buf_add_highlight(bar_buf, ns, "ClaudeCodeDiffBtnReject", 0, reject_start, reject_end)
+
+  vim.bo[bar_buf].modifiable = false
+
+  -- Position button bar below the diff windows
+  -- diff windows occupy: start_row to start_row + diff_height + 2 (border)
+  local bar_row = start_row + diff_height + bar_border_height
+  local bar_win = vim.api.nvim_open_win(bar_buf, false, {
+    relative = "editor",
+    height = bar_height,
+    width = total_width,
+    row = bar_row,
+    col = start_col,
+    style = "minimal",
+    border = "rounded",
+    focusable = true,
+  })
+  session.bar_win = bar_win
+
+  -- Set bar background
+  vim.wo[bar_win].winhl = "Normal:ClaudeCodeDiffBtnBar,NormalFloat:ClaudeCodeDiffBtnBar"
+  vim.wo[bar_win].cursorline = false
 
   -- Focus the proposed (new) window so user sees changes first
   vim.api.nvim_set_current_win(new_win)
@@ -399,13 +473,14 @@ end
 -- Cleanup
 --------------------------------------------------------------------------------
 
---- Clean up a diff session: diffoff, bwipeout, remove autocmds, restore layout
+--- Clean up a diff session: close floating windows, remove autocmds
+--- Scratch buffers are automatically wiped via bufhidden=wipe when windows close.
 --- @param session DiffSession
 function M.cleanup(session)
   -- Remove from active sessions
   sessions[session.id] = nil
 
-  -- Suppress WinClosed auto-reject on OTHER sessions during tab/window cleanup
+  -- Suppress WinClosed auto-reject on OTHER sessions during cleanup
   cleaning_up = true
 
   -- Delete the augroup first to prevent autocmds from firing during cleanup
@@ -414,56 +489,24 @@ function M.cleanup(session)
     session.augroup = nil
   end
 
-  -- diffoff on both windows
+  -- Close floating windows (bufhidden=wipe automatically deletes scratch buffers)
+  if session.bar_win and vim.api.nvim_win_is_valid(session.bar_win) then
+    pcall(vim.api.nvim_win_close, session.bar_win, true)
+  end
   if session.old_win and vim.api.nvim_win_is_valid(session.old_win) then
-    vim.api.nvim_win_call(session.old_win, function()
-      vim.cmd("diffoff")
-    end)
+    pcall(vim.api.nvim_win_close, session.old_win, true)
   end
   if session.new_win and vim.api.nvim_win_is_valid(session.new_win) then
-    vim.api.nvim_win_call(session.new_win, function()
-      vim.cmd("diffoff")
-    end)
-  end
-
-  -- Close the diff tab (this also wipes the scratch buffers via bufhidden=wipe)
-  if session.diff_tab and vim.api.nvim_tabpage_is_valid(session.diff_tab) then
-    local tabnr = vim.api.nvim_tabpage_get_number(session.diff_tab)
-    pcall(vim.cmd, tabnr .. "tabclose")
-  else
-    -- Fallback: wipe scratch buffers manually if tab is already gone
-    if session.old_buf and vim.api.nvim_buf_is_valid(session.old_buf) then
-      pcall(vim.api.nvim_buf_delete, session.old_buf, { force = true })
-    end
-    if session.new_buf and vim.api.nvim_buf_is_valid(session.new_buf) then
-      pcall(vim.api.nvim_buf_delete, session.new_buf, { force = true })
-    end
-  end
-
-  -- If other diff sessions are still active, switch to the next one
-  -- instead of restoring the original layout (which may be the CLI terminal)
-  local next_session = next(sessions)
-  if next_session then
-    local s = sessions[next_session]
-    if s.diff_tab and vim.api.nvim_tabpage_is_valid(s.diff_tab) then
-      pcall(vim.api.nvim_set_current_tabpage, s.diff_tab)
-    end
-  elseif session.saved_layout then
-    -- No more diffs: restore original layout
-    if session.saved_layout.tab and vim.api.nvim_tabpage_is_valid(session.saved_layout.tab) then
-      pcall(vim.api.nvim_set_current_tabpage, session.saved_layout.tab)
-    end
-    if session.saved_layout.win and vim.api.nvim_win_is_valid(session.saved_layout.win) then
-      pcall(vim.api.nvim_set_current_win, session.saved_layout.win)
-    end
+    pcall(vim.api.nvim_win_close, session.new_win, true)
   end
 
   -- Clear references and free large data
   session.old_buf = nil
   session.new_buf = nil
+  session.bar_buf = nil
   session.old_win = nil
   session.new_win = nil
-  session.diff_tab = nil
+  session.bar_win = nil
   session.send_response = nil
   session.new_file_contents = nil
 
@@ -509,11 +552,11 @@ function M.show(params, send_response)
     send_response = send_response,
     old_buf = nil,
     new_buf = nil,
+    bar_buf = nil,
     old_win = nil,
     new_win = nil,
-    diff_tab = nil,
+    bar_win = nil,
     augroup = nil,
-    saved_layout = nil,
   }
 
   -- Update batch_total on all existing sessions so their winbar reflects the new total
@@ -525,13 +568,13 @@ function M.show(params, send_response)
   session.old_buf = create_old_buffer(session.old_file_path, session_id)
   session.new_buf = create_new_buffer(session.new_file_path, session.new_file_contents, session_id)
 
-  -- Create the diff layout (vsplit + diffthis)
+  -- Create the diff layout (floating windows + diffthis)
   create_layout(session)
 
   -- Set up keymaps (accept/reject) on both buffers
   setup_keymaps(session)
 
-  -- Set up safety-net autocmds (BufWinLeave -> reject)
+  -- Set up safety-net autocmds (WinClosed -> reject)
   setup_autocmds(session)
 
   -- Track the session
