@@ -1,0 +1,268 @@
+*claude-code.txt*    Claude Code integration for Neovim
+
+Author:  claude-code.nvim contributors
+License: MIT
+
+==============================================================================
+CONTENTS                                              *claude-code-contents*
+
+  1. Introduction .......................... |claude-code|
+  2. Setup ................................ |claude-code-setup|
+  3. Configuration ........................ |claude-code-config|
+  4. Commands ............................. |claude-code-commands|
+  5. Lua API .............................. |claude-code-api|
+  6. Statusline ........................... |claude-code-statusline|
+  7. Events ............................... |claude-code-events|
+  8. Diff Workflow ........................ |claude-code-diff|
+
+==============================================================================
+1. INTRODUCTION                                               *claude-code*
+
+claude-code.nvim integrates Claude Code CLI with Neovim via a built-in MCP
+(Model Context Protocol) server. Claude Code can read your editor state,
+open files, show diffs, access diagnostics, and more — all through a
+WebSocket connection.
+
+Requirements:
+- Neovim >= 0.10.0
+- Claude Code CLI installed and available in $PATH
+
+==============================================================================
+2. SETUP                                                *claude-code-setup*
+
+Using lazy.nvim: >lua
+  {
+    "your-username/claude-code.nvim",
+    config = function()
+      require("claude-code").setup()
+    end,
+  }
+<
+
+Using packer.nvim: >lua
+  use {
+    "your-username/claude-code.nvim",
+    config = function()
+      require("claude-code").setup()
+    end,
+  }
+<
+
+Manual installation: clone the repository into your packages directory
+and call `require("claude-code").setup()` from your init.lua.
+
+==============================================================================
+3. CONFIGURATION                                       *claude-code-config*
+
+Pass a table to `setup()` to override defaults: >lua
+
+  require("claude-code").setup({
+    server = {
+      host = "127.0.0.1",       -- bind address
+      port_range = { 10000, 65535 },
+    },
+    auto_start = true,           -- start MCP server on plugin load
+    log = {
+      level = "warn",            -- "debug", "info", "warn", "error"
+    },
+    terminal = {
+      mode = "vsplit",           -- "vsplit" or "external"
+      split_side = "right",      -- "left" or "right"
+      split_width_percentage = 0.4,
+    },
+    diagnostics = {
+      enabled = true,            -- send diagnostics_changed notifications
+    },
+    diff = {
+      auto_close = true,
+      feedback_delay = 800,      -- ms, 0 to close immediately
+      keymaps = {
+        accept = { "<CR>", "ga" },
+        reject = { "q", "gx" },
+      },
+    },
+  })
+<
+
+                                                  *claude-code-config-server*
+server.host ~
+  Bind address. Must be "127.0.0.1" or "localhost".
+
+server.port_range ~
+  Range of acceptable ports. The OS assigns a free port; this validates it.
+
+                                               *claude-code-config-terminal*
+terminal.mode ~
+  "vsplit" opens Claude CLI in a vertical split inside Neovim.
+  "external" copies a shell command to clipboard for use in a separate terminal.
+
+terminal.split_side ~
+  "left" or "right" — which side the vsplit opens on.
+
+terminal.split_width_percentage ~
+  Width of the terminal split as a fraction of total columns (0.0–1.0).
+
+                                                    *claude-code-config-diff*
+diff.feedback_delay ~
+  Duration (ms) to show accept/reject feedback before closing the diff tab.
+  Set to 0 for instant close.
+
+diff.keymaps.accept ~
+  Key(s) to accept the proposed diff. String or list of strings.
+
+diff.keymaps.reject ~
+  Key(s) to reject the proposed diff. String or list of strings.
+
+==============================================================================
+4. COMMANDS                                         *claude-code-commands*
+
+                                                            *:ClaudeCode*
+:ClaudeCode [mode] [args]
+  Open Claude CLI in a terminal. Optional [mode] is "vsplit" (default) or
+  "external". Additional [args] are passed to the claude CLI.
+
+                                                        *:ClaudeCodeStart*
+:ClaudeCodeStart
+  Start the MCP server manually. No-op if already running.
+
+                                                         *:ClaudeCodeStop*
+:ClaudeCodeStop
+  Stop the MCP server and clean up all resources.
+
+                                                      *:ClaudeCodeRestart*
+:ClaudeCodeRestart
+  Stop then restart the MCP server.
+
+                                                       *:ClaudeCodeStatus*
+:ClaudeCodeStatus
+  Print server status: running/stopped, port, client connection, uptime,
+  and number of registered tools.
+
+                                                         *:ClaudeAtMention*
+:ClaudeAtMention
+  Send the current file as an @mention notification to Claude CLI.
+  Supports visual range: select lines and run :'<,'>ClaudeAtMention to
+  mention only the selected region.
+
+==============================================================================
+5. LUA API                                               *claude-code-api*
+
+All functions are accessed via `require("claude-code")`.
+
+setup({opts})                                      *claude-code.setup()*
+  Initialize the plugin with optional configuration.
+
+start()                                            *claude-code.start()*
+  Start the MCP server and create the lock file.
+
+stop()                                             *claude-code.stop()*
+  Stop the MCP server and clean up resources.
+
+restart()                                          *claude-code.restart()*
+  Stop then restart the MCP server.
+
+is_running()                                       *claude-code.is_running()*
+  Returns `true` if the MCP server is running.
+
+is_connected()                                     *claude-code.is_connected()*
+  Returns `true` if a Claude CLI client is connected.
+
+get_port()                                         *claude-code.get_port()*
+  Returns the current server port, or `nil` if not running.
+
+statusline()                                       *claude-code.statusline()*
+  Returns a statusline string:
+  - `"Claude"` when a client is connected
+  - `"Claude (waiting)"` when server is running but no client
+  - `""` when server is not running
+
+open_terminal({args})                              *claude-code.open_terminal()*
+  Open Claude CLI based on configured mode. Accepts optional CLI args.
+
+open_vsplit({args})                                *claude-code.open_vsplit()*
+  Open Claude CLI in a vertical split terminal.
+
+open_external()                                    *claude-code.open_external()*
+  Copy the Claude CLI launch command to clipboard and display it.
+
+at_mention({filepath}, {startline}, {endline})     *claude-code.at_mention()*
+  Send an @mention notification. All parameters are optional.
+  Lines are 0-indexed.
+
+status()                                           *claude-code.status()*
+  Print the server connection status.
+
+==============================================================================
+6. STATUSLINE                                      *claude-code-statusline*
+
+Built-in statusline integration: >vim
+  set statusline=%{%v:lua.require('claude-code').statusline()%}\ %f
+<
+
+With lualine.nvim: >lua
+  require("lualine").setup({
+    sections = {
+      lualine_x = {
+        { function() return require("claude-code").statusline() end },
+      },
+    },
+  })
+<
+
+==============================================================================
+7. EVENTS                                            *claude-code-events*
+
+The plugin emits User autocommand events. Hook into them with: >lua
+  vim.api.nvim_create_autocmd("User", {
+    pattern = "ClaudeCodeClientConnected",
+    callback = function(args)
+      vim.notify("Claude connected!")
+    end,
+  })
+<
+
+Available events:
+
+ClaudeCodeServerStarted ~
+  Fired when the MCP server starts. Data: `{ port = <number> }`
+
+ClaudeCodeServerStopped ~
+  Fired when the MCP server stops. Data: `{}`
+
+ClaudeCodeClientConnected ~
+  Fired when Claude CLI completes the WebSocket handshake. Data: `{}`
+
+ClaudeCodeClientDisconnected ~
+  Fired when the Claude CLI client disconnects. Data: `{}`
+
+ClaudeCodeDiffAccepted ~
+  Fired when a diff is accepted. Data: `{ filePath = <string> }`
+
+ClaudeCodeDiffRejected ~
+  Fired when a diff is rejected. Data: `{ filePath = <string> }`
+
+==============================================================================
+8. DIFF WORKFLOW                                       *claude-code-diff*
+
+When Claude proposes file changes via the openDiff MCP tool, a side-by-side
+diff view opens in a new tab page:
+
+- Left pane: original file content
+- Right pane: proposed changes (read-only)
+- Winbar shows progress [n/m], file name, and keybinding hints
+
+Default keymaps (configurable via diff.keymaps):
+  <CR> / ga .... Accept the proposed changes
+  q / gx ....... Reject the proposed changes
+
+Accepting writes the proposed content to disk and reloads any open buffer
+for that file. Rejecting keeps the original file unchanged.
+
+A brief feedback flash (configurable via diff.feedback_delay) shows the
+result before the diff tab closes automatically.
+
+Multiple sequential diffs from a single Claude response show progress as
+[1/3], [2/3], [3/3]. The counter resets between batches.
+
+==============================================================================
+vim:tw=78:ts=8:ft=help:norl:

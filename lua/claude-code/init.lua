@@ -1,10 +1,29 @@
 local config = require("claude-code.config")
-local util = require("claude-code.util")
-local lockfile = require("claude-code.lockfile")
-local server = require("claude-code.server")
-local mcp = require("claude-code.mcp")
 
 local M = {}
+
+-- Lazy-loaded module caches (populated on first use)
+local _util, _lockfile, _server, _mcp
+
+local function util()
+  _util = _util or require("claude-code.util")
+  return _util
+end
+
+local function lockfile()
+  _lockfile = _lockfile or require("claude-code.lockfile")
+  return _lockfile
+end
+
+local function server()
+  _server = _server or require("claude-code.server")
+  return _server
+end
+
+local function mcp()
+  _mcp = _mcp or require("claude-code.mcp")
+  return _mcp
+end
 
 --- @type string|nil Current auth token
 local auth_token = nil
@@ -17,15 +36,15 @@ local term_bufnr = nil
 
 --- Start the MCP server and create the lock file
 function M.start()
-  if server.is_running() then
-    util.log_warn("Already running on port %d", server.get_port() or 0)
+  if server().is_running() then
+    util().log_warn("Already running on port %d", server().get_port() or 0)
     return
   end
 
-  auth_token = util.generate_uuid()
+  auth_token = util().generate_uuid()
 
   -- Register default MCP handlers
-  mcp.register_defaults()
+  mcp().register_defaults()
 
   -- Register tools
   require("claude-code.tools.open_file")
@@ -35,18 +54,19 @@ function M.start()
   require("claude-code.tools.editors")
   require("claude-code.tools.documents")
 
-  local port = server.start(config.values, auth_token)
+  local port = server().start(config.values, auth_token)
   if not port then
-    util.log_error("Failed to start server")
+    util().log_error("Failed to start server")
     return
   end
 
-  lockfile.create(port, auth_token)
+  lockfile().create(port, auth_token)
+  lockfile().setup_workspace_detection()
 
   -- Setup diagnostics notifications
   require("claude-code.notifications").setup_diagnostics()
 
-  util.log_info("Claude Code server ready on port %d", port)
+  util().log_info("Claude Code server ready on port %d", port)
 
   -- Emit user event
   pcall(vim.api.nvim_exec_autocmds, "User", {
@@ -67,13 +87,14 @@ function M.stop()
   -- Teardown diagnostics notifications
   require("claude-code.notifications").teardown_diagnostics()
 
-  local port = server.get_port()
+  lockfile().teardown_workspace_detection()
+  local port = server().get_port()
   if port then
-    lockfile.remove(port)
+    lockfile().remove(port)
   end
-  server.stop()
+  server().stop()
   auth_token = nil
-  util.log_info("Claude Code server stopped")
+  util().log_info("Claude Code server stopped")
 
   -- Emit user event
   pcall(vim.api.nvim_exec_autocmds, "User", {
@@ -85,22 +106,22 @@ end
 --- Check if the server is running
 --- @return boolean
 function M.is_running()
-  return server.is_running()
+  return server().is_running()
 end
 
 --- Get the current server port
 --- @return number|nil
 function M.get_port()
-  return server.get_port()
+  return server().get_port()
 end
 
 --- Statusline component: returns a string indicating Claude Code connection state
 --- @return string
 function M.statusline()
-  if not server.is_running() then
+  if not server().is_running() then
     return ""
   end
-  if server.is_client_connected() then
+  if server().is_client_connected() then
     return "Claude"
   end
   return "Claude (waiting)"
@@ -109,7 +130,7 @@ end
 --- Check if a Claude Code client is connected
 --- @return boolean
 function M.is_connected()
-  return server.is_client_connected()
+  return server().is_client_connected()
 end
 
 --- Restart the server (stop + start)
@@ -117,7 +138,7 @@ function M.restart()
   M.stop()
   vim.defer_fn(function()
     M.start()
-    local port = server.get_port()
+    local port = server().get_port()
     if port then
       vim.notify(
         string.format("[claude-code] Server restarted on port %d", port),
@@ -153,10 +174,10 @@ end
 --- Ensure server is running, return true if ready
 --- @return boolean
 local function ensure_server()
-  if not server.is_running() then
-    util.log_warn("Server not running, starting first...")
+  if not server().is_running() then
+    util().log_warn("Server not running, starting first...")
     M.start()
-    if not server.is_running() then
+    if not server().is_running() then
       return false
     end
   end
@@ -167,7 +188,7 @@ end
 --- Calls callback() if no client connected or user confirms disconnect.
 --- @param callback function
 local function check_existing_client(callback)
-  if not server.is_client_connected() then
+  if not server().is_client_connected() then
     callback()
     return
   end
@@ -176,7 +197,7 @@ local function check_existing_client(callback)
     prompt = "[claude-code] A client is already connected. Disconnect and continue?",
   }, function(choice)
     if choice == "Yes" then
-      server.disconnect_client()
+      server().disconnect_client()
       callback()
     end
   end)
@@ -195,7 +216,7 @@ local function do_open_vsplit(args)
     end
   end
 
-  local port = server.get_port()
+  local port = server().get_port()
 
   -- Build shell command with env vars prepended
   local env_cmd = string.format(
@@ -237,7 +258,7 @@ end
 
 --- Start server and show command for external terminal usage (internal implementation)
 local function do_open_external()
-  local port = server.get_port()
+  local port = server().get_port()
   local cmd = string.format(
     "unset CLAUDECODE && CLAUDE_CODE_SSE_PORT=%d MCP_CONNECTION_NONBLOCKING=true claude --ide",
     port
@@ -271,13 +292,13 @@ end
 
 --- Show connection status
 function M.status()
-  if not server.is_running() then
+  if not server().is_running() then
     vim.notify("Claude Code MCP Server\n  Status:     stopped", vim.log.levels.INFO)
     return
   end
 
-  local port = server.get_port()
-  local connected = server.is_client_connected()
+  local port = server().get_port()
+  local connected = server().is_client_connected()
   local tools = require("claude-code.tools")
 
   local lines = {
@@ -286,7 +307,7 @@ function M.status()
     "  Port:       " .. (port or 0),
     "  Auth:       configured",
     "  Client:     " .. (connected and "connected" or "not connected"),
-    "  Uptime:     " .. server.get_uptime_str(),
+    "  Uptime:     " .. server().get_uptime_str(),
     "  Tools:      " .. tools.count() .. " registered",
   }
 
@@ -297,7 +318,7 @@ end
 --- @param opts table|nil
 function M.setup(opts)
   config.apply(opts)
-  util.set_log_level(config.values.log.level)
+  util().set_log_level(config.values.log.level)
 
   -- Create commands
   vim.api.nvim_create_user_command("ClaudeCode", function(cmd_opts)

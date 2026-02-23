@@ -197,6 +197,9 @@ function M.setup()
   vim.api.nvim_create_autocmd({ "CursorMoved", "CursorMovedI" }, {
     group = augroup_id,
     callback = function()
+      if not server.is_client_connected() then
+        return
+      end
       M._current = get_selection_info()
       schedule_notification()
     end,
@@ -207,6 +210,9 @@ function M.setup()
     group = augroup_id,
     pattern = "*:*",
     callback = function(ev)
+      if not server.is_client_connected() then
+        return
+      end
       -- The old mode is in the pattern before the colon
       local old_mode = ev.match:match("^([^:]+):")
 

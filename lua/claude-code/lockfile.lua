@@ -3,6 +3,16 @@ local util = require("claude-code.util")
 local uv = vim.uv or vim.loop
 local M = {}
 
+--- Stored port and auth_token for lockfile refresh
+--- @type number|nil
+local _port = nil
+--- @type string|nil
+local _auth_token = nil
+
+--- Augroup id for workspace detection autocmds
+--- @type number|nil
+local _ws_augroup = nil
+
 --- Get the IDE lock directory path
 --- @return string
 local function get_lock_dir()
@@ -35,6 +45,10 @@ end
 --- @param port number
 --- @param auth_token string
 function M.create(port, auth_token)
+  -- Store for refresh via M.update()
+  _port = port
+  _auth_token = auth_token
+
   local lock_dir = get_lock_dir()
 
   -- Ensure directory exists with 0700
@@ -84,6 +98,46 @@ function M.remove(port)
   if stat then
     uv.fs_unlink(lock_path)
     util.log_info("Lock file removed: %s", lock_path)
+  end
+  _port = nil
+  _auth_token = nil
+end
+
+--- Refresh the lockfile with current workspace folders
+--- No-op if port/auth_token are not set (server not running)
+function M.update()
+  if _port and _auth_token then
+    M.create(_port, _auth_token)
+  end
+end
+
+--- Setup autocmds to auto-detect workspace folder changes via LSP events
+function M.setup_workspace_detection()
+  if _ws_augroup then
+    return
+  end
+
+  _ws_augroup = vim.api.nvim_create_augroup("ClaudeCodeWorkspace", { clear = true })
+
+  vim.api.nvim_create_autocmd({ "LspAttach", "LspDetach" }, {
+    group = _ws_augroup,
+    callback = function()
+      -- Defer to let LSP workspace folders update first
+      vim.defer_fn(function()
+        M.update()
+      end, 100)
+    end,
+  })
+
+  util.log_debug("Workspace detection autocmds created")
+end
+
+--- Remove workspace detection autocmds
+function M.teardown_workspace_detection()
+  if _ws_augroup then
+    vim.api.nvim_del_augroup_by_id(_ws_augroup)
+    _ws_augroup = nil
+    util.log_debug("Workspace detection autocmds removed")
   end
 end
 

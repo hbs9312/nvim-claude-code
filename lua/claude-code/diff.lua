@@ -9,9 +9,13 @@ local M = {}
 --- Diff index counter for progress display (increments for each diff shown)
 local diff_index = 0
 
+--- Total number of diffs in the current batch (updated as diffs arrive)
+local batch_total = 0
+
 --- @class DiffSession
 --- @field id string unique session identifier
 --- @field diff_index number progress index for display
+--- @field batch_total number total diffs in current batch at time of creation
 --- @field old_buf number|nil old (original) scratch buffer handle
 --- @field new_buf number|nil new (proposed) scratch buffer handle
 --- @field old_win number|nil old window handle
@@ -365,7 +369,7 @@ local function create_layout(session)
 
   -- Set winbar labels with diff index and colored highlight groups
   local filename = vim.fn.fnamemodify(session.new_file_path, ":t")
-  local index_part = string.format("%%#ClaudeCodeDiffIndex#[%d] ", session.diff_index)
+  local index_part = string.format("%%#ClaudeCodeDiffIndex#[%d/%d] ", session.diff_index, session.batch_total)
 
   -- Build keymap hint from config
   local accept_keys = config.values.diff and config.values.diff.keymaps and config.values.diff.keymaps.accept
@@ -446,13 +450,20 @@ function M.cleanup(session)
     end
   end
 
-  -- Clear references
+  -- Clear references and free large data
   session.old_buf = nil
   session.new_buf = nil
   session.old_win = nil
   session.new_win = nil
   session.diff_tab = nil
   session.send_response = nil
+  session.new_file_contents = nil
+
+  -- Reset batch counters when all sessions are closed
+  if next(sessions) == nil then
+    diff_index = 0
+    batch_total = 0
+  end
 
   util.log_debug("Diff session cleaned up: %s", session.id)
 end
@@ -474,11 +485,13 @@ function M.show(params, send_response)
 
   -- Increment diff index for progress display
   diff_index = diff_index + 1
+  batch_total = diff_index
 
   --- @type DiffSession
   local session = {
     id = session_id,
     diff_index = diff_index,
+    batch_total = batch_total,
     old_file_path = params.old_file_path,
     new_file_path = params.new_file_path,
     new_file_contents = params.new_file_contents,
@@ -493,6 +506,11 @@ function M.show(params, send_response)
     augroup = nil,
     saved_layout = nil,
   }
+
+  -- Update batch_total on all existing sessions so their winbar reflects the new total
+  for _, s in pairs(sessions) do
+    s.batch_total = batch_total
+  end
 
   -- Create scratch buffers
   session.old_buf = create_old_buffer(session.old_file_path, session_id)
