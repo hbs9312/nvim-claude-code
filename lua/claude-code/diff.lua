@@ -12,6 +12,9 @@ local diff_index = 0
 --- Total number of diffs in the current batch (updated as diffs arrive)
 local batch_total = 0
 
+--- Flag to suppress WinClosed auto-reject during cleanup
+local cleaning_up = false
+
 --- @class DiffSession
 --- @field id string unique session identifier
 --- @field diff_index number progress index for display
@@ -128,9 +131,8 @@ local function create_new_buffer(new_file_path, new_file_contents, session_id)
     vim.bo[buf].filetype = ft
   end
 
-  -- Make readonly and non-modifiable
-  vim.bo[buf].readonly = true
-  vim.bo[buf].modifiable = false
+  -- Keep buffer modifiable so the user can edit proposed changes before accepting.
+  -- The final buffer content is read on accept and sent back to CLI as final_content.
 
   return buf
 end
@@ -202,27 +204,28 @@ local function resolve(session, action)
       data = { filePath = session.new_file_path },
     })
 
-    -- Send deferred MCP response to signal acceptance.
-    -- NOTE: We do NOT write the file here. Claude CLI handles the actual
-    -- file write after receiving this response. Writing here would cause
-    -- a conflict when the CLI also tries to apply the edit.
-    if session.send_response then
-      session.send_response({
-        content = { { type = "text", text = "FILE_SAVED" } },
-      })
+    -- Read final content from the proposed (new) buffer.
+    -- The user may have edited it in the diff view, so read the buffer, not the original string.
+    local final_content = session.new_file_contents
+    if session.new_buf and vim.api.nvim_buf_is_valid(session.new_buf) then
+      local content_lines = vim.api.nvim_buf_get_lines(session.new_buf, 0, -1, false)
+      final_content = table.concat(content_lines, "\n")
+      -- Preserve trailing newline if buffer has eol set
+      if #content_lines > 0 and vim.bo[session.new_buf].eol then
+        final_content = final_content .. "\n"
+      end
     end
 
-    -- Schedule buffer reload: after Claude CLI writes the file,
-    -- ensure the Neovim buffer reflects the updated contents.
-    local file_path = session.new_file_path
-    vim.defer_fn(function()
-      local buf = vim.fn.bufnr(file_path)
-      if buf ~= -1 and vim.api.nvim_buf_is_valid(buf) then
-        pcall(vim.api.nvim_buf_call, buf, function()
-          vim.cmd("checktime")
-        end)
-      end
-    end, 500)
+    -- Send deferred MCP response with file content.
+    -- CLI handles the actual file write after receiving this response.
+    if session.send_response then
+      session.send_response({
+        content = {
+          { type = "text", text = "FILE_SAVED" },
+          { type = "text", text = final_content },
+        },
+      })
+    end
   else
     -- reject: keep original, do nothing to disk
     util.log_info("Diff rejected: %s", session.new_file_path)
@@ -235,7 +238,10 @@ local function resolve(session, action)
 
     if session.send_response then
       session.send_response({
-        content = { { type = "text", text = "DIFF_REJECTED" } },
+        content = {
+          { type = "text", text = "DIFF_REJECTED" },
+          { type = "text", text = session.tab_name or session.new_file_path },
+        },
       })
     end
   end
@@ -322,7 +328,7 @@ local function setup_autocmds(session)
         pattern = tostring(win),
         once = true,
         callback = function()
-          if not session.resolved then
+          if not session.resolved and not cleaning_up then
             vim.schedule(function()
               resolve(session, "reject")
             end)
@@ -399,7 +405,10 @@ function M.cleanup(session)
   -- Remove from active sessions
   sessions[session.id] = nil
 
-  -- Delete the augroup first to prevent BufWinLeave from firing during cleanup
+  -- Suppress WinClosed auto-reject on OTHER sessions during tab/window cleanup
+  cleaning_up = true
+
+  -- Delete the augroup first to prevent autocmds from firing during cleanup
   if session.augroup then
     pcall(vim.api.nvim_del_augroup_by_id, session.augroup)
     session.augroup = nil
@@ -418,16 +427,7 @@ function M.cleanup(session)
   end
 
   -- Close the diff tab (this also wipes the scratch buffers via bufhidden=wipe)
-  -- First, switch to the saved tab so closing the diff tab doesn't land us somewhere random
-  if session.saved_layout and session.saved_layout.tab then
-    if vim.api.nvim_tabpage_is_valid(session.saved_layout.tab) then
-      pcall(vim.api.nvim_set_current_tabpage, session.saved_layout.tab)
-    end
-  end
-
-  -- Close the diff tab if it still exists
   if session.diff_tab and vim.api.nvim_tabpage_is_valid(session.diff_tab) then
-    -- tabclose requires tab number, not handle
     local tabnr = vim.api.nvim_tabpage_get_number(session.diff_tab)
     pcall(vim.cmd, tabnr .. "tabclose")
   else
@@ -440,8 +440,19 @@ function M.cleanup(session)
     end
   end
 
-  -- Restore focus to original window
-  if session.saved_layout then
+  -- If other diff sessions are still active, switch to the next one
+  -- instead of restoring the original layout (which may be the CLI terminal)
+  local next_session = next(sessions)
+  if next_session then
+    local s = sessions[next_session]
+    if s.diff_tab and vim.api.nvim_tabpage_is_valid(s.diff_tab) then
+      pcall(vim.api.nvim_set_current_tabpage, s.diff_tab)
+    end
+  elseif session.saved_layout then
+    -- No more diffs: restore original layout
+    if session.saved_layout.tab and vim.api.nvim_tabpage_is_valid(session.saved_layout.tab) then
+      pcall(vim.api.nvim_set_current_tabpage, session.saved_layout.tab)
+    end
     if session.saved_layout.win and vim.api.nvim_win_is_valid(session.saved_layout.win) then
       pcall(vim.api.nvim_set_current_win, session.saved_layout.win)
     end
@@ -462,6 +473,7 @@ function M.cleanup(session)
     batch_total = 0
   end
 
+  cleaning_up = false
   util.log_debug("Diff session cleaned up: %s", session.id)
 end
 

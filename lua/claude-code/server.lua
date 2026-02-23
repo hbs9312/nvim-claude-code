@@ -33,9 +33,15 @@ local state = {
 --- Send data to the connected client
 --- @param data string
 local function send_to_client(data)
-  if state.client and not state.client:is_closing() then
-    state.client:write(data)
+  if not state.client then
+    util.log_warn("send_to_client: no client connected (data len=%d)", #data)
+    return
   end
+  if state.client:is_closing() then
+    util.log_warn("send_to_client: client is closing (data len=%d)", #data)
+    return
+  end
+  state.client:write(data)
 end
 
 --- Send a WebSocket text frame to the client

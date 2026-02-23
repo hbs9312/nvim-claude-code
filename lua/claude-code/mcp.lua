@@ -24,14 +24,17 @@ local deferred = {}
 function M.defer_response(id, callback)
   -- callback receives a "send" function that must be called exactly once
   deferred[id] = true
+  util.log_debug("defer_response: registered deferred id=%s", tostring(id))
   callback(function(result)
     deferred[id] = nil
     local server = require("claude-code.server")
-    server.send_text(vim.json.encode({
+    local json = vim.json.encode({
       jsonrpc = "2.0",
       id = id,
       result = result,
-    }))
+    })
+    util.log_debug("defer_response: sending id=%s len=%d", tostring(id), #json)
+    server.send_text(json)
   end)
 end
 
@@ -125,9 +128,12 @@ function M.register_defaults()
   M.register_handler("initialize", function(params, _id)
     util.log_info("MCP initialize from: %s", vim.inspect(params.clientInfo or {}))
     return {
-      protocolVersion = "2025-03-26",
+      protocolVersion = "2024-11-05",
       capabilities = {
-        tools = vim.empty_dict(),
+        logging = vim.empty_dict(),
+        prompts = { listChanged = true },
+        resources = { subscribe = true, listChanged = true },
+        tools = { listChanged = true },
       },
       serverInfo = {
         name = "Claude Code Neovim MCP",
