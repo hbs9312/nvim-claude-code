@@ -290,6 +290,21 @@ function M.open_terminal(args)
   end
 end
 
+--- Focus the Claude Code terminal window (if it exists in vsplit)
+--- @return boolean focused true if terminal was found and focused
+function M.focus_terminal()
+  if term_bufnr and vim.api.nvim_buf_is_valid(term_bufnr) then
+    for _, win in ipairs(vim.api.nvim_list_wins()) do
+      if vim.api.nvim_win_get_buf(win) == term_bufnr then
+        vim.api.nvim_set_current_win(win)
+        vim.cmd("startinsert")
+        return true
+      end
+    end
+  end
+  return false
+end
+
 --- Show connection status
 function M.status()
   if not server().is_running() then
@@ -344,6 +359,12 @@ function M.setup(opts)
   vim.api.nvim_create_user_command("ClaudeCodeRestart", function()
     M.restart()
   end, { desc = "Restart Claude Code server" })
+
+  vim.api.nvim_create_user_command("ClaudeCodeFocus", function()
+    if not M.focus_terminal() then
+      vim.notify("[claude-code] No terminal window found", vim.log.levels.WARN)
+    end
+  end, { desc = "Focus the Claude Code terminal window" })
 
   vim.api.nvim_create_user_command("ClaudeAtMention", function(cmd_opts)
     require("claude-code.notifications").at_mention(cmd_opts)

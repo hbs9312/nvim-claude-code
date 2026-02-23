@@ -256,6 +256,18 @@ function M.setup()
               },
             }
           end
+
+          -- Send selection_changed immediately (bypassing debounce)
+          -- so Claude CLI receives the selection before user switches to terminal
+          if M._latest and not selection_equal(M._latest, last_sent) then
+            last_sent = vim.deepcopy(M._latest)
+            pcall(server.send_notification, "selection_changed", {
+              text = M._latest.text,
+              filePath = M._latest.filePath,
+              fileUrl = M._latest.fileUrl,
+              selection = M._latest.selection,
+            })
+          end
         end
       end
 

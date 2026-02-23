@@ -194,24 +194,6 @@ local function resolve(session, action)
   remove_keymaps(session)
 
   if action == "accept" then
-    -- Create parent directories if needed (new file case)
-    local dir = vim.fn.fnamemodify(session.new_file_path, ":h")
-    if vim.fn.isdirectory(dir) == 0 then
-      vim.fn.mkdir(dir, "p")
-    end
-
-    -- Write new_file_contents to disk
-    local lines = vim.split(session.new_file_contents, "\n", { plain = true })
-    vim.fn.writefile(lines, session.new_file_path)
-
-    -- If the file is already open in an existing buffer, reload it from disk
-    local existing_buf = vim.fn.bufnr(session.new_file_path)
-    if existing_buf ~= -1 and vim.api.nvim_buf_is_valid(existing_buf) then
-      vim.api.nvim_buf_call(existing_buf, function()
-        vim.cmd("edit!")
-      end)
-    end
-
     util.log_info("Diff accepted: %s", session.new_file_path)
 
     -- Emit user event
@@ -220,12 +202,27 @@ local function resolve(session, action)
       data = { filePath = session.new_file_path },
     })
 
-    -- Send deferred MCP response (before feedback delay so it doesn't block Claude CLI)
+    -- Send deferred MCP response to signal acceptance.
+    -- NOTE: We do NOT write the file here. Claude CLI handles the actual
+    -- file write after receiving this response. Writing here would cause
+    -- a conflict when the CLI also tries to apply the edit.
     if session.send_response then
       session.send_response({
         content = { { type = "text", text = "FILE_SAVED" } },
       })
     end
+
+    -- Schedule buffer reload: after Claude CLI writes the file,
+    -- ensure the Neovim buffer reflects the updated contents.
+    local file_path = session.new_file_path
+    vim.defer_fn(function()
+      local buf = vim.fn.bufnr(file_path)
+      if buf ~= -1 and vim.api.nvim_buf_is_valid(buf) then
+        pcall(vim.api.nvim_buf_call, buf, function()
+          vim.cmd("checktime")
+        end)
+      end
+    end, 500)
   else
     -- reject: keep original, do nothing to disk
     util.log_info("Diff rejected: %s", session.new_file_path)
@@ -558,3 +555,4 @@ function M.close_all()
 end
 
 return M
+

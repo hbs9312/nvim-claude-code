@@ -262,21 +262,21 @@ end
 --- @return string
 function M.apply_mask(data, mask)
   local len = #data
-  local bytes = { data:byte(1, len) }
   local m1, m2, m3, m4 = mask:byte(1, 4)
   local mask_bytes = { m1, m2, m3, m4 }
-  local result = {}
-  for i = 1, len do
-    result[i] = bxor(bytes[i], mask_bytes[((i - 1) % 4) + 1])
-  end
-  -- Convert byte values to string in chunks to avoid unpack stack overflow
   local CHUNK = 4096
   local parts = {}
   for i = 1, len, CHUNK do
     local j = math.min(i + CHUNK - 1, len)
-    parts[#parts + 1] = string.char(unpack(result, i, j))
+    local chunk_bytes = { data:byte(i, j) }
+    local result = {}
+    for k = 1, #chunk_bytes do
+      result[k] = bxor(chunk_bytes[k], mask_bytes[((i + k - 2) % 4) + 1])
+    end
+    parts[#parts + 1] = string.char(unpack(result))
   end
   return table.concat(parts)
 end
 
 return M
+
