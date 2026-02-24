@@ -34,6 +34,9 @@ local augroup = nil
 --- @type number|nil Terminal buffer number
 local term_bufnr = nil
 
+--- @type number|nil Terminal job id (for chan_send)
+local term_job_id = nil
+
 --- Start the MCP server and create the lock file
 function M.start()
   if server().is_running() then
@@ -66,6 +69,9 @@ function M.start()
   -- Setup diagnostics notifications
   require("claude-code.notifications").setup_diagnostics()
 
+  -- Setup plan preview (hook registration)
+  require("claude-code.plan").setup()
+
   util().log_info("Claude Code server ready on port %d", port)
 
   -- Emit user event
@@ -83,6 +89,9 @@ function M.stop()
 
   -- Teardown selection tracking
   require("claude-code.tools.selection").teardown()
+
+  -- Teardown plan preview
+  require("claude-code.plan").teardown()
 
   -- Teardown diagnostics notifications
   require("claude-code.notifications").teardown_diagnostics()
@@ -238,9 +247,10 @@ local function do_open_vsplit(args)
   end
 
   -- Start terminal in the new buffer
-  vim.fn.termopen(env_cmd, {
+  term_job_id = vim.fn.termopen(env_cmd, {
     on_exit = function()
       term_bufnr = nil
+      term_job_id = nil
     end,
   })
   term_bufnr = vim.api.nvim_get_current_buf()
@@ -304,6 +314,18 @@ function M.focus_terminal()
     end
   end
   return false
+end
+
+--- Get the terminal buffer number
+--- @return number|nil
+function M.get_term_bufnr()
+  return term_bufnr
+end
+
+--- Get the terminal job id (for nvim_chan_send)
+--- @return number|nil
+function M.get_term_job_id()
+  return term_job_id
 end
 
 --- Show connection status
@@ -370,6 +392,28 @@ function M.setup(opts)
   vim.api.nvim_create_user_command("ClaudeAtMention", function(cmd_opts)
     require("claude-code.notifications").at_mention(cmd_opts)
   end, { range = true, desc = "Send current file/selection to Claude as @mention" })
+
+  -- Plan commands
+  vim.api.nvim_create_user_command("ClaudePlanOpen", function(cmd_opts)
+    local path = cmd_opts.args ~= "" and cmd_opts.args or nil
+    require("claude-code.plan").open(path)
+  end, { nargs = "?", complete = "file", desc = "Open Claude plan preview" })
+
+  vim.api.nvim_create_user_command("ClaudePlanComment", function()
+    require("claude-code.plan").add_comment()
+  end, { range = true, desc = "Add comment to plan selection" })
+
+  vim.api.nvim_create_user_command("ClaudePlanSubmit", function()
+    require("claude-code.plan").submit()
+  end, { desc = "Submit plan feedback to Claude" })
+
+  vim.api.nvim_create_user_command("ClaudePlanClear", function()
+    require("claude-code.plan").clear_comments()
+  end, { desc = "Clear all plan comments" })
+
+  vim.api.nvim_create_user_command("ClaudePlanClose", function()
+    require("claude-code.plan").close()
+  end, { desc = "Close plan preview" })
 
   -- Cleanup on exit
   augroup = vim.api.nvim_create_augroup("ClaudeCode", { clear = true })

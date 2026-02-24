@@ -25,6 +25,16 @@ M.defaults = {
       reject = { "q", "gx" },
     },
   },
+  plan = {
+    enabled = true,
+    keymaps = {
+      comment = "gc",
+      submit = "<leader>ps",
+      accept = "<leader>pa",
+      clear = "<leader>px",
+      close = "q",
+    },
+  },
 }
 
 --- @type table
@@ -54,3 +64,4 @@ function M.apply(user_opts)
 end
 
 return M
+
