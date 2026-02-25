@@ -12,7 +12,7 @@ M.defaults = {
   terminal = {
     mode = "vsplit", -- "vsplit" | "external"
     split_side = "right",
-    split_width_percentage = 0.4,
+    split_width_percentage = 0.3,
   },
   diagnostics = {
     enabled = true, -- send diagnostics_changed notifications
@@ -64,4 +64,5 @@ function M.apply(user_opts)
 end
 
 return M
+
 
