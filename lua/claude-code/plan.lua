@@ -17,6 +17,10 @@ local M = {}
 --- @field comment_text string
 --- @field extmark_id number|nil
 
+--- @class PlanGeneralComment
+--- @field id number
+--- @field comment_text string
+
 --- @class PlanSession
 --- @field plan_path string
 --- @field buf number
@@ -24,6 +28,7 @@ local M = {}
 --- @field term_win number|nil window that was showing the terminal (to restore)
 --- @field term_bufnr number|nil terminal buffer that was displaced
 --- @field comments PlanComment[]
+--- @field general_comments PlanGeneralComment[]
 --- @field ns number namespace id
 --- @field augroup number
 
@@ -32,6 +37,9 @@ local session = nil
 
 --- @type number
 local comment_counter = 0
+
+--- @type number
+local general_comment_counter = 0
 
 --------------------------------------------------------------------------------
 -- Highlights
@@ -177,6 +185,7 @@ local function create_layout(ses)
   vim.wo[ses.win].winbar = "  Plan Preview: "
     .. vim.fn.fnamemodify(ses.plan_path, ":t")
     .. "  %#Comment#|  gc comment  "
+    .. (km.general_comment or "gC") .. " general  "
     .. (km.submit or "<leader>ps") .. " submit  "
     .. (km.accept or "<leader>pa") .. " accept  "
     .. (km.close or "q") .. " close%*"
@@ -244,6 +253,41 @@ function M.add_comment(ses)
   end)
 end
 
+--- Add a general comment (not tied to specific lines)
+--- @param ses PlanSession|nil
+function M.add_general_comment(ses)
+  ses = ses or session
+  if not ses then
+    vim.notify("[claude-code] No plan session active", vim.log.levels.WARN)
+    return
+  end
+
+  vim.ui.input({ prompt = "General plan feedback: " }, function(input)
+    if not input or input == "" then return end
+
+    general_comment_counter = general_comment_counter + 1
+
+    --- @type PlanGeneralComment
+    local comment = {
+      id = general_comment_counter,
+      comment_text = input,
+    }
+
+    -- Show as virtual text at the top of the buffer
+    local virt_lines = {
+      { { "  ** ", "ClaudeCodePlanCommentMarker" }, { "[G" .. comment.id .. "] " .. input, "ClaudeCodePlanComment" } },
+    }
+
+    vim.api.nvim_buf_set_extmark(ses.buf, ses.ns, 0, 0, {
+      virt_lines = virt_lines,
+      virt_lines_above = true,
+    })
+
+    table.insert(ses.general_comments, comment)
+    util.log_info("General plan comment #%d added", comment.id)
+  end)
+end
+
 --- Clear all comments from the session
 --- @param ses PlanSession|nil
 function M.clear_comments(ses)
@@ -255,7 +299,9 @@ function M.clear_comments(ses)
 
   vim.api.nvim_buf_clear_namespace(ses.buf, ses.ns, 0, -1)
   ses.comments = {}
+  ses.general_comments = {}
   comment_counter = 0
+  general_comment_counter = 0
   vim.notify("[claude-code] Plan comments cleared", vim.log.levels.INFO)
 end
 
@@ -267,15 +313,31 @@ end
 --- @param ses PlanSession
 --- @return string
 local function compile_feedback(ses)
-  if #ses.comments == 0 then
+  local has_line = #ses.comments > 0
+  local has_general = #ses.general_comments > 0
+
+  if not has_line and not has_general then
     return ""
   end
 
   local parts = { "Plan feedback:", "" }
 
-  for _, c in ipairs(ses.comments) do
-    local ref = string.format("@%s#%d-%d", ses.plan_path, c.line_start + 1, c.line_end + 1)
-    parts[#parts + 1] = "- " .. ref .. " — " .. c.comment_text
+  if has_general then
+    parts[#parts + 1] = "General:"
+    for _, c in ipairs(ses.general_comments) do
+      parts[#parts + 1] = "- " .. c.comment_text
+    end
+    if has_line then
+      parts[#parts + 1] = ""
+    end
+  end
+
+  if has_line then
+    parts[#parts + 1] = "Line-specific:"
+    for _, c in ipairs(ses.comments) do
+      local ref = string.format("@%s#%d-%d", ses.plan_path, c.line_start + 1, c.line_end + 1)
+      parts[#parts + 1] = "- " .. ref .. " — " .. c.comment_text
+    end
   end
 
   return table.concat(parts, "\n")
@@ -290,7 +352,7 @@ function M.submit(ses)
     return
   end
 
-  if #ses.comments == 0 then
+  if #ses.comments == 0 and #ses.general_comments == 0 then
     vim.notify("[claude-code] No comments to submit", vim.log.levels.WARN)
     return
   end
@@ -506,6 +568,11 @@ local function setup_keymaps(ses)
     end)
   end, { buffer = buf, nowait = true, silent = true, desc = "Add plan comment (claude-code)" })
 
+  -- gC (normal) → general comment
+  vim.keymap.set("n", km.general_comment or "gC", function()
+    M.add_general_comment(ses)
+  end, { buffer = buf, nowait = true, silent = true, desc = "Add general plan comment (claude-code)" })
+
   -- submit
   vim.keymap.set("n", km.submit or "<leader>ps", function()
     M.submit(ses)
@@ -577,6 +644,7 @@ function M.open(path)
     term_win = nil,
     term_bufnr = nil,
     comments = {},
+    general_comments = {},
     ns = ns,
     augroup = vim.api.nvim_create_augroup("ClaudePlan", { clear = true }),
   }
@@ -638,6 +706,7 @@ function M.close()
   end
 
   comment_counter = 0
+  general_comment_counter = 0
   util.log_debug("Plan session closed")
 end
 

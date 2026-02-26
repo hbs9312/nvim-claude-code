@@ -29,6 +29,7 @@ M.defaults = {
     enabled = true,
     keymaps = {
       comment = "gc",
+      general_comment = "gC",
       submit = "<leader>ps",
       accept = "<leader>pa",
       clear = "<leader>px",
