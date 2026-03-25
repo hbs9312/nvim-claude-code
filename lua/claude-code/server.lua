@@ -154,7 +154,8 @@ local function process_http_data(data)
   -- Successful upgrade
   local headers = result
   local client_key = headers["sec-websocket-key"]
-  local response = websocket.create_upgrade_response(client_key)
+  local protocol = headers["sec-websocket-protocol"]
+  local response = websocket.create_upgrade_response(client_key, protocol)
   send_to_client(response)
 
   state.handshake_done = true
@@ -176,7 +177,7 @@ end
 --- @param data string|nil
 local function on_data(err, data)
   if err then
-    util.log_error("Read error: %s", err)
+    util.log_error("Read error: %s (handshake_done=%s, buf_len=%d)", err, tostring(state.handshake_done), #state.client_buf)
     close_client()
     return
   end
@@ -186,6 +187,12 @@ local function on_data(err, data)
     util.log_info("Client connection closed (EOF)")
     close_client()
     return
+  end
+
+  util.log_debug("on_data: received %d bytes, handshake_done=%s", #data, tostring(state.handshake_done))
+  if not state.handshake_done then
+    -- Log raw HTTP request for debugging
+    util.log_debug("on_data raw:\n%s", data:sub(1, 500))
   end
 
   if state.handshake_done then
@@ -216,7 +223,8 @@ local function on_new_connection(err)
   state.client_buf = ""
   state.handshake_done = false
 
-  util.log_info("New client connected")
+  local peer = client:getpeername()
+  util.log_info("New client connected from %s:%d", peer and peer.ip or "?", peer and peer.port or 0)
   client:read_start(on_data)
 end
 

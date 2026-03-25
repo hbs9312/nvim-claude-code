@@ -54,14 +54,18 @@ end
 
 --- Create HTTP 101 Switching Protocols response
 --- @param client_key string Sec-WebSocket-Key from client
+--- @param protocol string|nil Sec-WebSocket-Protocol to echo back
 --- @return string
-function M.create_upgrade_response(client_key)
+function M.create_upgrade_response(client_key, protocol)
   local accept = util.generate_accept_key(client_key)
-  return "HTTP/1.1 101 Switching Protocols\r\n"
+  local resp = "HTTP/1.1 101 Switching Protocols\r\n"
     .. "Upgrade: websocket\r\n"
     .. "Connection: Upgrade\r\n"
     .. "Sec-WebSocket-Accept: " .. accept .. "\r\n"
-    .. "\r\n"
+  if protocol then
+    resp = resp .. "Sec-WebSocket-Protocol: " .. protocol .. "\r\n"
+  end
+  return resp .. "\r\n"
 end
 
 --- Create a 403 Forbidden response
